@@ -144,116 +144,131 @@ def download_paper_async(paper_id):
 if option == "搜索论文":
     st.header("搜索ArXiv论文")
     
-    # 搜索表单
-    with st.form(key='search_form'):
-        query = st.text_input("搜索论文", value="", help="输入关键词，例如：quantum computing")
+    # 在选择论文的部分
+    if 'selected_paper_id' not in st.session_state:
+        st.session_state.selected_paper_id = None
+
+    # 搜索表单部分 - 使用回调函数而不是直接在表单中处理
+    def search_papers():
+        query = st.session_state.search_query
+        max_results = st.session_state.max_results
+        sort_by = st.session_state.sort_by
+        auto_translate = st.session_state.auto_translate
+        use_backup = st.session_state.use_backup
         
-        # 搜索选项
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            max_results = st.number_input("最大结果数", min_value=5, max_value=100, value=10)
-        with col2:
-            sort_by = st.selectbox("排序方式", ["relevance", "lastUpdatedDate", "submittedDate"])
-        with col3:
-            auto_translate = st.checkbox("自动翻译查询", value=True)
-        with col4:
-            use_backup = st.checkbox("使用备用源", value=True, help="如果ArXiv结果较少，自动使用其他学术搜索源")
+        with st.spinner("搜索中..."):
+            translated_query = query
+            translation_performed = False
+            
+            # 如果需要翻译查询（包含中文）
+            if auto_translate and contains_chinese(query):
+                translated_query, translation_performed = translate_to_english(query)
+                
+            if translation_performed:
+                st.info(f"已将搜索关键词翻译为: \"{translated_query}\"")
+                
+            # 执行搜索
+            results = arxiv_client.search(translated_query, max_results=max_results, sort_by=sort_by, use_backup=use_backup)
+            
+            # 将搜索结果保存到session_state以便后续使用
+            st.session_state.search_results = results
+            
+            # 将结果转换为DataFrame以便显示
+            df_data = []
+            for paper in results:
+                # 添加来源标记
+                source_label = "[ArXiv]" if paper.get('source', '') == 'arxiv' else "[CrossRef]" if paper.get('source', '') == 'crossref' else ""
+                
+                # 确保有URL字段
+                if 'url' not in paper and paper.get('id'):
+                    arxiv_id = paper.get('id')
+                    if arxiv_id.startswith('arxiv:'):
+                        arxiv_id = arxiv_id[6:]
+                    paper['url'] = f"https://arxiv.org/abs/{arxiv_id}"
+                    paper['pdf_url'] = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
+                
+                df_data.append({
+                    "ID": paper['id'],
+                    "来源": source_label,
+                    "标题": paper['title'],
+                    "作者": ', '.join(paper['authors']) if isinstance(paper['authors'], list) else paper['authors'],
+                    "发布日期": paper['published'].split()[0] if isinstance(paper['published'], str) else paper['published'],
+                    "分类": ', '.join(paper['categories']) if isinstance(paper['categories'], list) else paper['categories']
+                })
+            
+            st.session_state.df_data = df_data
+
+    # 初始化session_state变量
+    if 'search_query' not in st.session_state:
+        st.session_state.search_query = ""
+    if 'max_results' not in st.session_state:
+        st.session_state.max_results = 10
+    if 'sort_by' not in st.session_state:
+        st.session_state.sort_by = "relevance"
+    if 'auto_translate' not in st.session_state:
+        st.session_state.auto_translate = True
+    if 'use_backup' not in st.session_state:
+        st.session_state.use_backup = True
+
+    # 搜索输入字段 - 不使用表单
+    st.text_input("搜索论文", value="", key="search_query", help="输入关键词，例如：quantum computing")
+
+    # 搜索选项
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.number_input("最大结果数", min_value=5, max_value=100, value=10, key="max_results")
+    with col2:
+        st.selectbox("排序方式", ["relevance", "lastUpdatedDate", "submittedDate"], key="sort_by")
+    with col3:
+        st.checkbox("自动翻译查询", value=True, key="auto_translate")
+    with col4:
+        st.checkbox("使用备用源", value=True, key="use_backup", help="如果ArXiv结果较少，自动使用其他学术搜索源")
+
+    # 搜索按钮 - 不在表单内
+    if st.button("搜索", key="search_button"):
+        search_papers()
+
+    # 显示搜索结果
+    if 'df_data' in st.session_state and st.session_state.df_data:
+        df_data = st.session_state.df_data
+        results = st.session_state.search_results
         
-        # 搜索按钮
-        search_button = st.form_submit_button("搜索")
+        st.write(f"找到 {len(df_data)} 篇论文:")
         
-        # 初始化 selected_paper_id 变量
-        selected_paper_id = None
+        # 使用表格展示简要信息
+        df = pd.DataFrame(df_data)
+        st.dataframe(df)
         
-        if search_button and query:
-            with st.spinner("搜索中..."):
-                translated_query = query
-                translation_performed = False
-                
-                # 如果需要翻译查询（包含中文）
-                if auto_translate and contains_chinese(query):
-                    translated_query, translation_performed = translate_to_english(query)
-                    
-                    # 额外检查是否翻译成功
-                    if translation_performed and contains_chinese(translated_query):
-                        st.warning("翻译服务似乎未正常工作，尝试再次翻译...")
-                        translated_query, translation_performed = translate_to_english(query)
-                    
-                    # 如果仍然包含中文或看起来像错误消息，使用简单的词典替换
-                    if contains_chinese(translated_query) or "MYMEMORY" in translated_query:
-                        # 简单的中文关键词映射（可以根据需要扩展）
-                        zh_to_en = {
-                            "人工智能": "artificial intelligence",
-                            "机器学习": "machine learning",
-                            "深度学习": "deep learning",
-                            "自然语言处理": "natural language processing",
-                            "计算机视觉": "computer vision",
-                            "神经网络": "neural network",
-                            "强化学习": "reinforcement learning",
-                            "大模型": "large language model",
-                            "量子计算": "quantum computing",
-                            "综述": "survey review",
-                            "粒子": "particle",
-                            "物理": "physics"
-                        }
-                        
-                        # 替换已知关键词
-                        for zh, en in zh_to_en.items():
-                            if zh in query:
-                                translated_query = query.replace(zh, en)
-                                translation_performed = True
-                
-                if translation_performed:
-                    st.info(f"已将搜索关键词翻译为: \"{translated_query}\"")
-                    
-                # 执行搜索
-                results = arxiv_client.search(translated_query, max_results=max_results, sort_by=sort_by, use_backup=use_backup)
-                
-                # 将搜索结果保存到session_state以便后续使用
-                st.session_state.search_results = results
-                
-                # 将结果转换为DataFrame以便显示
-                df_data = []
-                for paper in results:
-                    # 添加来源标记
-                    source_label = "[ArXiv]" if paper.get('source', '') == 'arxiv' else "[CrossRef]" if paper.get('source', '') == 'crossref' else ""
-                    
-                    # 确保有URL字段
-                    if 'url' not in paper and paper.get('id'):
-                        arxiv_id = paper.get('id')
-                        if arxiv_id.startswith('arxiv:'):
-                            arxiv_id = arxiv_id[6:]
-                        paper['url'] = f"https://arxiv.org/abs/{arxiv_id}"
-                        paper['pdf_url'] = f"https://arxiv.org/pdf/{arxiv_id}.pdf"
-                    
-                    df_data.append({
-                        "ID": paper['id'],
-                        "来源": source_label,
-                        "标题": paper['title'],
-                        "作者": ', '.join(paper['authors']) if isinstance(paper['authors'], list) else paper['authors'],
-                        "发布日期": paper['published'].split()[0] if isinstance(paper['published'], str) else paper['published'],
-                        "分类": ', '.join(paper['categories']) if isinstance(paper['categories'], list) else paper['categories']
-                    })
-                
-                # 显示结果
-                if df_data:
-                    df = pd.DataFrame(df_data)
-                    st.write(f"找到 {len(df_data)} 篇论文:")
-                    st.dataframe(df)
-                    
-                    # 创建一个选择框，让用户可以选择论文查看详情
-                    # 使用ID作为值，标题作为显示
-                    paper_options = {f"{paper['id']} - {paper['title'][:50]}...": paper['id'] for paper in results}
-                    selected_paper = st.selectbox("选择论文查看详情", list(paper_options.keys()))
-                    selected_paper_id = paper_options[selected_paper] if selected_paper else None
-                else:
-                    st.warning("未找到匹配的论文")
-                    selected_paper_id = None
-    
-    # 如果选择了论文，显示详情
-    if selected_paper_id:
+        # 创建选择框 - 不在表单内
+        paper_options = {f"{paper['id']} - {paper['title'][:50]}...": paper['id'] for paper in results}
+        
+        # 定义选择论文时的回调函数
+        def on_paper_select():
+            # 从选择框的值中获取论文ID
+            selected_option = st.session_state.paper_selector
+            paper_id = paper_options[selected_option]
+            # 更新selected_paper_id
+            st.session_state.selected_paper_id = paper_id
+
+        # 使用on_change参数指定回调函数
+        selected_paper_option = st.selectbox(
+            "选择论文查看详情", 
+            list(paper_options.keys()),
+            key="paper_selector",
+            on_change=on_paper_select  # 当选择变化时调用回调函数
+        )
+        
+        # 不再需要查看详情按钮，因为选择论文时会自动获取详情
+        # 但可以保留按钮用于重新加载详情
+        if st.button("重新加载详情", key="reload_details_button"):
+            # 这里不需要做任何事情，因为Streamlit会自动重新运行脚本
+            pass
+
+    # 显示选定论文详情 - 不在表单内
+    if st.session_state.selected_paper_id:
+        paper_id = st.session_state.selected_paper_id
         with st.spinner("获取论文详情..."):
-            paper = arxiv_client.get_paper_details(selected_paper_id)
+            paper = arxiv_client.get_paper_details(paper_id)
             
             if "error" not in paper:
                 # 在session_state中存储当前论文详情
@@ -376,12 +391,12 @@ if option == "搜索论文":
                 action_col1, action_col2 = st.columns(2)
                 
                 with action_col1:
-                    # 下载按钮实现 (之前实现的代码)
-                    # 检查论文是否已在下载中或已完成
+                    # 下载按钮实现
                     if paper['id'] not in st.session_state.download_states:
                         if st.button("📥 下载此论文", key=f"download_button_{paper['id']}"):
-                            # 启动异步下载
+                            # 初始化下载状态
                             st.session_state.download_states[paper['id']] = "initialized"
+                            st.session_state.download_messages[paper['id']] = "正在准备下载..."
                             
                             # 创建并启动下载线程
                             download_thread = threading.Thread(
@@ -392,34 +407,6 @@ if option == "搜索论文":
                             ctx = get_script_run_ctx()
                             add_script_run_ctx(download_thread)
                             download_thread.start()
-                            
-                            # 立即显示下载已开始
-                            st.session_state.download_messages[paper['id']] = "正在准备下载..."
-                            time.sleep(0.1)  # 短暂延迟以确保UI更新
-                            st.experimental_rerun()  # 重新运行以显示下载状态
-                
-                    # 下载状态和消息显示
-                    if paper['id'] in st.session_state.download_states:
-                        download_state = st.session_state.download_states[paper['id']]
-                        message = st.session_state.download_messages.get(paper['id'], "")
-                        
-                        if download_state == "downloading" or download_state == "initialized":
-                            with st.spinner("正在下载..."):
-                                st.info(message)
-                        elif download_state == "success":
-                            st.success(message)
-                            # 添加一个按钮清除下载状态，以便可以再次下载
-                            if st.button("清除下载状态", key=f"clear_{paper['id']}"):
-                                del st.session_state.download_states[paper['id']]
-                                del st.session_state.download_messages[paper['id']]
-                                st.experimental_rerun()
-                        elif download_state == "error":
-                            st.error(message)
-                            # 添加重试按钮
-                            if st.button("重试下载", key=f"retry_{paper['id']}"):
-                                del st.session_state.download_states[paper['id']]
-                                del st.session_state.download_messages[paper['id']]
-                                st.experimental_rerun()
                 
                 with action_col2:
                     # 添加收藏按钮
