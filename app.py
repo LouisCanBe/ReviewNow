@@ -23,8 +23,12 @@ def safe_get(dictionary, key, default=""):
 arxiv_client = ArxivClient()
 paper_manager = PaperManager()
 
-# 设置页面标题
-st.set_page_config(page_title="ArXiv综述整理工具", layout="wide")
+# 设置页面配置，包括图标
+st.set_page_config(
+    page_title="ArXiv综述整理工具",
+    page_icon="📚",  # 使用书籍emoji作为图标
+    layout="wide"
+)
 st.title("ArXiv 综述整理工具")
 
 # 创建侧边栏，用于切换功能
